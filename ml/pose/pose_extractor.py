@@ -54,34 +54,53 @@ class PoseExtractor:
         if not cap.isOpened():
             raise ValueError(f"Could not open video file: {video_path}")
 
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        raw_landmarks = []
-        detected_frames = 0
-
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-                
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = self.pose.process(rgb_frame)
-
-            if results.pose_landmarks:
-                detected_frames += 1
-                frame_lms = [[lm.x, lm.y, lm.z, lm.visibility] for lm in results.pose_landmarks.landmark]
-                raw_landmarks.append(np.array(frame_lms, dtype=np.float32))
+            # Compute aspect-ratio preserving processing resolution
+            max_dim = int(os.getenv("ML_FRAME_MAX_DIM", "640"))
+            needs_resize = False
+            if max(width, height) > max_dim and max(width, height) > 0:
+                scale = max_dim / float(max(width, height))
+                target_w = int(round(width * scale))
+                target_h = int(round(height * scale))
+                needs_resize = True
             else:
-                raw_landmarks.append(np.full((33, 4), np.nan, dtype=np.float32))
+                target_w, target_h = width, height
 
-        cap.release()
+            raw_landmarks = []
+            detected_frames = 0
+
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                if needs_resize:
+                    proc_frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
+                else:
+                    proc_frame = frame
+
+                rgb_frame = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
+                results = self.pose.process(rgb_frame)
+
+                if results.pose_landmarks:
+                    detected_frames += 1
+                    frame_lms = [[lm.x, lm.y, lm.z, lm.visibility] for lm in results.pose_landmarks.landmark]
+                    raw_landmarks.append(frame_lms)
+                else:
+                    raw_landmarks.append([[np.nan, np.nan, np.nan, np.nan]] * 33)
+
+                del frame, proc_frame, rgb_frame, results
+        finally:
+            cap.release()
 
         if len(raw_landmarks) == 0:
-            raw_landmarks = [np.full((33, 4), np.nan, dtype=np.float32)]
+            raw_landmarks = [[[np.nan, np.nan, np.nan, np.nan]] * 33]
 
-        raw_landmarks = np.array(raw_landmarks) # (T, 33, 4)
+        raw_landmarks = np.array(raw_landmarks, dtype=np.float32) # (T, 33, 4)
         cleaned_landmarks = self.clean_and_interpolate_landmarks(raw_landmarks)
 
         metadata = {

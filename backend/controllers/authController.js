@@ -106,7 +106,8 @@ const registerUser = async (req, res) => {
         email: cleanEmail,
         password: hashedPassword,
         role: userRole,
-        gender: userGender,
+        battingRole: battingRole || 'Opening Batter',
+        battingStyle: battingStyle || 'Right-Handed',
         createdAt: new Date(),
       };
 
@@ -122,7 +123,8 @@ const registerUser = async (req, res) => {
           name: mockUser.name,
           email: mockUser.email,
           role: mockUser.role,
-          gender: mockUser.gender,
+          battingRole: mockUser.battingRole,
+          battingStyle: mockUser.battingStyle,
           createdAt: mockUser.createdAt,
         },
       });

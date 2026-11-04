@@ -30,7 +30,17 @@ const uploadVideoToCloudinary = async (req, res) => {
       apiKey !== '123456789012345';
 
     if (!isCloudinaryConfigured) {
-      console.log('[Upload Controller] Cloudinary API not configured in .env. Storing video in local uploads directory.');
+      if (process.env.NODE_ENV === 'production') {
+        if (filePath && fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+        return res.status(503).json({
+          success: false,
+          message: 'Cloudinary storage is required in production but is not configured. Please verify Cloudinary environment variables.',
+        });
+      }
+
+      console.log('[Upload Controller] Cloudinary not configured in local environment. Storing video in local uploads directory for development.');
       
       const uploadsDir = path.join(__dirname, '../uploads');
       if (!fs.existsSync(uploadsDir)) {
@@ -50,7 +60,7 @@ const uploadVideoToCloudinary = async (req, res) => {
       const protocol = req.protocol || 'http';
       const localUrl = `${protocol}://${host}/uploads/${uniqueFilename}`;
 
-      console.log(`[Upload Controller] Preserved unique video upload: ${localUrl} (${destPath})`);
+      console.log(`[Upload Controller] Local video upload ready: ${localUrl} (${destPath})`);
 
       return res.status(200).json({
         success: true,
@@ -71,11 +81,6 @@ const uploadVideoToCloudinary = async (req, res) => {
         public_id: `cricket_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
       });
 
-      // Cleanup local temp file
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-
       return res.status(200).json({
         success: true,
         secure_url: result.secure_url,
@@ -89,14 +94,19 @@ const uploadVideoToCloudinary = async (req, res) => {
         http_code: cloudinaryError.http_code,
         name: cloudinaryError.name
       });
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
       return res.status(400).json({
         success: false,
         message: `Cloudinary upload failed: ${cloudinaryError.message}`,
         error: cloudinaryError.message,
       });
+    } finally {
+      if (filePath && fs.existsSync(filePath)) {
+        try {
+          fs.unlinkSync(filePath);
+        } catch (cleanupErr) {
+          console.warn('[Upload Controller] Could not delete temp file:', cleanupErr.message);
+        }
+      }
     }
   } catch (error) {
     console.error('Upload Controller error:', error);

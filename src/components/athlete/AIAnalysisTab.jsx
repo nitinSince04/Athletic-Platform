@@ -60,6 +60,11 @@ export default function AIAnalysisTab({ onOpenAuthModal }) {
     const source = fullSession || selected;
 
     if (source && (source.stroke || source.prediction)) {
+      const strokeVal = source.prediction?.stroke || source.stroke;
+      if (source.status === 'failed' || strokeVal === 'Processing...') {
+        console.warn("Session is still processing or has failed, cannot display as completed analysis.");
+        return;
+      }
       setActiveAnalysis({
         prediction: source.prediction || {
           stroke: source.stroke,

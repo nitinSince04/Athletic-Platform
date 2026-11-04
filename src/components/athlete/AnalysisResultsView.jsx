@@ -27,13 +27,39 @@ export default function AnalysisResultsView({ analysisData, onReset }) {
   const meta = analysisData.video_metadata || {};
   const visualizations = analysisData.visualizations || {};
 
-  const stroke = pred.stroke || 'Unknown';
+  const stroke = pred.stroke || pred.predicted_stroke || 'Unknown';
   const confidencePct = Math.round((pred.confidence || 0) * 100);
   const breakdown = pred.confidence_breakdown || {};
   const overallScore = Math.round(scores.overall || 0);
 
+  // Do not show fake successful Analysis Completed when prediction is missing or invalid
+  const isInvalid = !stroke || stroke === 'Unknown' || stroke === 'Processing...' || (pred.confidence === undefined || pred.confidence === 0);
+
+  if (isInvalid) {
+    return (
+      <div className="analysis-results stack">
+        <div className="results-header-card" style={{ borderLeft: '4px solid var(--accent-coral, #e63946)' }}>
+          <div className="results-header-left">
+            <Badge tone="coral" dot>Prediction Incomplete</Badge>
+            <h2 className="results-title">ANALYSIS INCOMPLETE</h2>
+            <p className="results-subtitle">
+              Cricket stroke classification could not be determined for this video. Please ensure the athlete is fully visible and performing a standard cricket stroke.
+            </p>
+          </div>
+          <div className="results-header-actions">
+            {onReset && (
+              <Button variant="primary" size="sm" onClick={onReset}>
+                Analyze Another Video
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const pdfUrl = analysisData.pdf_filename 
-    ? getPdfDownloadUrl(analysisData.pdf_filename)
+    ? getPdfDownloadUrl(analysisData.pdf_filename, analysisData.analysisId || analysisData._id)
     : (analysisData.pdfDownloadUrl || '#');
 
   const handleDownloadPdf = () => {

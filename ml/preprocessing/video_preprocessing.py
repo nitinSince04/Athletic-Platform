@@ -17,7 +17,7 @@ class VideoPreprocessor:
                 sha256.update(chunk)
         return sha256.hexdigest()
 
-    def validate_video(self, video_path):
+    def validate_video(self, video_path, precomputed_sha256=None):
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found: {video_path}")
         
@@ -25,34 +25,38 @@ class VideoPreprocessor:
         if not cap.isOpened():
             raise ValueError(f"Could not open video file: {video_path}")
             
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        # Sample pixel statistics across sampled frames to verify frame decoding
-        sampled_means = []
-        prev_frame = None
-        frame_diffs = []
+            # Sample pixel statistics across sampled frames to verify frame decoding
+            sampled_means = []
+            prev_frame = None
+            frame_diffs = []
 
-        step = max(1, total_frames // 10)
-        idx = 0
-        while cap.isOpened() and len(sampled_means) < 10:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret, frame = cap.read()
-            if not ret:
-                break
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            sampled_means.append(float(np.mean(gray)))
-            if prev_frame is not None:
-                diff = float(np.mean(cv2.absdiff(gray, prev_frame)))
-                frame_diffs.append(diff)
-            prev_frame = gray
-            idx += step
+            step = max(1, total_frames // 10)
+            idx = 0
+            while cap.isOpened() and len(sampled_means) < 10:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                sampled_means.append(float(np.mean(gray)))
+                if prev_frame is not None:
+                    diff = float(np.mean(cv2.absdiff(gray, prev_frame)))
+                    frame_diffs.append(diff)
+                prev_frame = gray
+                idx += step
+        finally:
+            cap.release()
 
-        cap.release()
-
-        video_hash = self.compute_sha256(video_path)
+        if precomputed_sha256:
+            video_hash = precomputed_sha256
+        else:
+            video_hash = self.compute_sha256(video_path)
         file_size = os.path.getsize(video_path)
 
         return {

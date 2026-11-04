@@ -31,6 +31,11 @@ export default function VideoUploadPanel({ onAnalysisComplete, onOpenAuthModal }
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Prevent duplicate upload if already running
+    if (stage !== STAGES.IDLE && stage !== STAGES.COMPLETE && stage !== STAGES.ERROR) {
+      return;
+    }
+
     // Check if user is authenticated first
     const activeToken = token || localStorage.getItem('authToken');
     if (!isAuthenticated && !activeToken) {
@@ -92,6 +97,15 @@ export default function VideoUploadPanel({ onAnalysisComplete, onOpenAuthModal }
 
       const analysisResult = await triggerCricketMLAnalysis(videoUrl, publicId);
 
+      // Validate result before showing completion: Never mark complete if stroke is unknown or scores are missing
+      const strokeName = analysisResult?.prediction?.stroke || analysisResult?.prediction?.predicted_stroke || analysisResult?.stroke;
+      if (!strokeName || strokeName === 'Unknown' || strokeName === 'Processing...') {
+        throw new Error("Analysis failed: Cricket stroke classification could not be determined. Please upload a clear cricket video clip.");
+      }
+      if (!analysisResult?.scores || typeof analysisResult?.scores?.overall !== 'number') {
+        throw new Error("Analysis failed: Technical performance scoring could not be computed.");
+      }
+
       // Step 4: Generating Report & PDF
       setProgress(95);
       setStage(STAGES.GENERATING_REPORT);
@@ -113,6 +127,12 @@ export default function VideoUploadPanel({ onAnalysisComplete, onOpenAuthModal }
       if (msg.includes("Authentication required") || msg.includes("401")) {
         setIsAuthError(true);
         setErrorMessage("Authentication required. Please sign in to your athlete account to analyze cricket stroke videos.");
+      } else if (err.status === 429 || msg.includes("capacity") || msg.includes("in progress")) {
+        setIsAuthError(false);
+        setErrorMessage(msg || "The AI analysis engine is currently processing at capacity. Please wait a moment and try again.");
+      } else if (err.status === 502 || err.status === 503 || msg.includes("starting up") || msg.includes("unreachable")) {
+        setIsAuthError(false);
+        setErrorMessage("The AI analysis engine is starting up on the server. Please wait about 30 seconds and try again.");
       } else {
         setIsAuthError(false);
         setErrorMessage(msg);

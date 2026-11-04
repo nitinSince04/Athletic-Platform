@@ -1,10 +1,15 @@
 import os
+import tempfile
 import uuid
 import numpy as np
+
+# Ensure writable matplotlib config directory for Linux / Render / Serverless
+if "MPLCONFIGDIR" not in os.environ:
+    os.environ["MPLCONFIGDIR"] = os.path.join(tempfile.gettempdir(), "matplotlib")
+
 import matplotlib
 matplotlib.use('Agg')  # Headless non-interactive server backend
 import matplotlib.pyplot as plt
-import seaborn as sns
 
 class VisualizationGenerator:
     """

@@ -1,7 +1,8 @@
+const path = require('path');
 const mongoose = require('mongoose');
 const Analysis = require('../models/Analysis.js');
 
-const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://127.0.0.1:8000';
+const ML_SERVICE_URL = (process.env.ML_SERVICE_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
 
 /**
  * Sends Cloudinary video URL to Python ML service for analysis,
@@ -19,6 +20,26 @@ const runAnalysis = async (req, res) => {
 
     console.log(`[Backend API] Requesting ML service analysis for video URL: ${videoUrl}`);
 
+    // Prevent duplicate submissions: check if user already has an active analysis running for this video within 2 minutes
+    if (mongoose.connection.readyState === 1 && userId && mongoose.Types.ObjectId.isValid(userId)) {
+      try {
+        const activeJob = await Analysis.findOne({
+          user: userId,
+          videoUrl: videoUrl,
+          status: 'processing',
+          createdAt: { $gte: new Date(Date.now() - 120000) },
+        });
+        if (activeJob) {
+          return res.status(429).json({
+            success: false,
+            message: 'An analysis is already in progress for this video. Please wait a moment.',
+          });
+        }
+      } catch (dupErr) {
+        console.warn('[Backend API] Duplicate check error:', dupErr.message);
+      }
+    }
+
     // Create an initial processing record in MongoDB for live Admin statistics
     if (mongoose.connection.readyState === 1 && userId && mongoose.Types.ObjectId.isValid(userId)) {
       try {
@@ -35,7 +56,11 @@ const runAnalysis = async (req, res) => {
       }
     }
 
-    // Call Python FastAPI ML Service
+    // Call Python FastAPI ML Service with timeout (configurable ML_TIMEOUT_MS, default 180s)
+    const controller = new AbortController();
+    const timeoutMs = parseInt(process.env.ML_TIMEOUT_MS || '180000', 10);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
     let mlResponse;
     try {
       mlResponse = await fetch(`${ML_SERVICE_URL}/api/ml/analyze`, {
@@ -45,13 +70,26 @@ const runAnalysis = async (req, res) => {
           video_url: videoUrl,
           user_id: userId ? userId.toString() : null,
         }),
+        signal: controller.signal,
       });
     } catch (fetchErr) {
+      clearTimeout(timeoutId);
       if (initialDoc) {
         initialDoc.status = 'failed';
         await initialDoc.save().catch(() => {});
       }
-      throw new Error(`ML Service unreachable at ${ML_SERVICE_URL}: ${fetchErr.message}`);
+      if (fetchErr.name === 'AbortError') {
+        return res.status(504).json({
+          success: false,
+          message: `The AI analysis service timed out after ${timeoutMs / 1000} seconds. Please try a shorter video clip.`,
+        });
+      }
+      return res.status(502).json({
+        success: false,
+        message: `Unable to reach the AI analysis engine (${ML_SERVICE_URL}). The service may be starting up on Render. Please wait 30 seconds and try again.`,
+      });
+    } finally {
+      clearTimeout(timeoutId);
     }
 
     if (!mlResponse.ok) {
@@ -59,11 +97,100 @@ const runAnalysis = async (req, res) => {
         initialDoc.status = 'failed';
         await initialDoc.save().catch(() => {});
       }
-      const errText = await mlResponse.text();
-      throw new Error(`ML Service responded with status ${mlResponse.status}: ${errText}`);
+
+      let errDetail = '';
+      try {
+        const errJson = await mlResponse.json();
+        errDetail = errJson.detail || errJson.message || '';
+      } catch {
+        errDetail = await mlResponse.text().catch(() => '');
+      }
+
+      if (mlResponse.status === 429) {
+        return res.status(429).json({
+          success: false,
+          message: errDetail || 'The AI analysis engine is currently processing at capacity. Please wait a moment and try again.',
+        });
+      }
+      if (mlResponse.status === 503) {
+        return res.status(503).json({
+          success: false,
+          message: errDetail || 'The AI analysis engine is temporarily unavailable. Please retry shortly.',
+        });
+      }
+
+      const statusCode = mlResponse.status >= 400 && mlResponse.status < 600 ? mlResponse.status : 500;
+      return res.status(statusCode).json({
+        success: false,
+        message: errDetail || `ML Service responded with status ${mlResponse.status}`,
+      });
     }
 
-    const mlResult = await mlResponse.json();
+    const mlResponseJson = await mlResponse.json();
+    let mlResult = mlResponseJson;
+
+    // Handle asynchronous job from ML service by polling until complete
+    if (mlResponseJson && mlResponseJson.job_id && (mlResponseJson.status === 'processing' || !mlResponseJson.prediction)) {
+      const jobId = mlResponseJson.job_id;
+      console.log(`[Backend API] ML service accepted async job ${jobId}. Polling for completion...`);
+
+      const pollStartTime = Date.now();
+      const maxPollMs = Math.min(timeoutMs, 180000);
+      let jobFinished = false;
+
+      while (!jobFinished && Date.now() - pollStartTime < maxPollMs) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+
+        try {
+          const pollRes = await fetch(`${ML_SERVICE_URL}/api/ml/jobs/${jobId}`);
+          if (pollRes.ok) {
+            const pollData = await pollRes.json();
+            if (pollData.status === 'completed') {
+              mlResult = pollData.result || pollData.data || pollData;
+              jobFinished = true;
+              console.log(`[Backend API] ML async job ${jobId} completed successfully.`);
+              break;
+            } else if (pollData.status === 'failed') {
+              const failureReason = pollData.error || pollData.message || 'ML analysis pipeline reported failure.';
+              throw new Error(failureReason);
+            }
+          }
+        } catch (pollErr) {
+          if (pollErr.message && (pollErr.message.includes('failure') || pollErr.message.includes('failed'))) {
+            throw pollErr;
+          }
+          console.warn(`[Backend API] Transient poll error for job ${jobId}:`, pollErr.message);
+        }
+      }
+
+      if (!jobFinished) {
+        throw new Error(`ML analysis job timed out on service after ${maxPollMs / 1000} seconds.`);
+      }
+    }
+
+    // Strict validation: Reject empty or invalid predictions
+    const strokePrediction = mlResult?.prediction?.stroke || mlResult?.prediction?.predicted_stroke;
+    if (!strokePrediction || strokePrediction === 'Unknown' || !mlResult.prediction || typeof mlResult.prediction.confidence !== 'number' || mlResult.prediction.confidence <= 0) {
+      if (initialDoc) {
+        initialDoc.status = 'failed';
+        await initialDoc.save().catch(() => {});
+      }
+      return res.status(502).json({
+        success: false,
+        message: 'ML analysis failed: Stroke classification returned an empty, unknown or invalid prediction.',
+      });
+    }
+
+    if (!mlResult.scores || typeof mlResult.scores.overall !== 'number') {
+      if (initialDoc) {
+        initialDoc.status = 'failed';
+        await initialDoc.save().catch(() => {});
+      }
+      return res.status(502).json({
+        success: false,
+        message: 'ML analysis failed: Technical performance scores are missing.',
+      });
+    }
 
     // Construct visualization URLs from ML service output filenames
     const vizData = mlResult.visualizations || {};
@@ -82,9 +209,9 @@ const runAnalysis = async (req, res) => {
     if (mongoose.connection.readyState === 1 && userId && mongoose.Types.ObjectId.isValid(userId)) {
       try {
         if (savedRecord) {
-          savedRecord.stroke = mlResult.prediction?.stroke || 'Cricket Shot';
-          savedRecord.confidence = mlResult.prediction?.confidence || 0;
-          savedRecord.confidenceBreakdown = mlResult.prediction?.confidence_breakdown || {};
+          savedRecord.stroke = strokePrediction;
+          savedRecord.confidence = mlResult.prediction.confidence;
+          savedRecord.confidenceBreakdown = mlResult.prediction.confidence_breakdown || {};
           savedRecord.scores = mlResult.scores || {};
           savedRecord.bodyAnalysis = mlResult.body_analysis || {};
           savedRecord.feedback = mlResult.feedback || [];
@@ -100,9 +227,9 @@ const runAnalysis = async (req, res) => {
             user: userId,
             videoUrl: videoUrl,
             cloudinaryPublicId: publicId || '',
-            stroke: mlResult.prediction?.stroke || 'Cricket Shot',
-            confidence: mlResult.prediction?.confidence || 0,
-            confidenceBreakdown: mlResult.prediction?.confidence_breakdown || {},
+            stroke: strokePrediction,
+            confidence: mlResult.prediction.confidence,
+            confidenceBreakdown: mlResult.prediction.confidence_breakdown || {},
             scores: mlResult.scores || {},
             bodyAnalysis: mlResult.body_analysis || {},
             feedback: mlResult.feedback || [],
@@ -221,10 +348,33 @@ const getAnalysisPdf = async (req, res) => {
   }
 };
 
+/**
+ * Visualization chart image proxy route
+ */
+const getAnalysisVisualization = async (req, res) => {
+  try {
+    const filename = path.basename(req.params.filename || '');
+    if (!filename) {
+      return res.status(400).json({ success: false, message: 'Filename required.' });
+    }
+    const chartRes = await fetch(`${ML_SERVICE_URL}/api/ml/visualizations/${filename}`);
+    if (!chartRes.ok) {
+      return res.status(404).json({ success: false, message: 'Visualization not found.' });
+    }
+    const arrayBuffer = await chartRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    res.setHeader('Content-Type', 'image/png');
+    return res.send(buffer);
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Error retrieving visualization image.' });
+  }
+};
+
 module.exports = {
   runAnalysis,
   getMyAnalyses,
   getAnalysisHistory: getMyAnalyses,
   getAnalysisById,
   getAnalysisPdf,
+  getAnalysisVisualization,
 };

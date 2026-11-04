@@ -1,5 +1,6 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
-const ML_SERVICE_URL = import.meta.env.VITE_ML_SERVICE_URL || 'http://localhost:8000';
+const RAW_URL = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/+$/, '');
+const API_BASE_URL = RAW_URL.endsWith('/api') ? RAW_URL : `${RAW_URL}/api`;
+const ML_SERVICE_URL = (import.meta.env.VITE_ML_SERVICE_URL || 'http://localhost:8000').replace(/\/+$/, '');
 
 function getAuthHeaders(isJson = true) {
   const token = localStorage.getItem('authToken');
@@ -64,10 +65,61 @@ export async function triggerCricketMLAnalysis(videoUrl, publicId) {
 
     if (!res.ok) {
       const errMsg = (json && json.message) || `Analysis failed with status ${res.status}`;
-      throw new Error(errMsg);
+      const err = new Error(errMsg);
+      err.status = res.status;
+      throw err;
     }
 
-    return json.data || json;
+    let finalData = json?.data || json;
+    const analysisId = json?.analysisId || finalData?.analysisId;
+
+    // If analysis is in progress, poll the session endpoint until completed
+    if (finalData && (finalData.status === 'processing' || !finalData.prediction) && analysisId) {
+      const startTime = Date.now();
+      const maxPoll = 180000;
+      while (Date.now() - startTime < maxPoll) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const session = await getAnalysisSessionById(analysisId);
+        if (session && session.status === 'completed') {
+          finalData = {
+            prediction: session.prediction || {
+              stroke: session.stroke,
+              predicted_stroke: session.stroke,
+              confidence: session.confidence || 0,
+              confidence_breakdown: session.confidenceBreakdown || {}
+            },
+            scores: session.scores || {},
+            body_analysis: session.bodyAnalysis || {},
+            feedback: session.feedback || [],
+            coaching_text: session.coachingText || '',
+            video_metadata: session.videoMetadata || {},
+            pdf_filename: session.pdfFilename || '',
+            pdfDownloadUrl: session.pdfDownloadUrl || '',
+            visualizations: session.visualizations || {},
+            videoUrl: session.videoUrl || videoUrl,
+            analysisId: session._id || analysisId
+          };
+          break;
+        } else if (session && session.status === 'failed') {
+          throw new Error('Video analysis processing failed on the server.');
+        }
+      }
+    }
+
+    // Strict frontend validation: Ensure prediction and scores are valid
+    const strokeVal = finalData?.prediction?.stroke || finalData?.prediction?.predicted_stroke || finalData?.stroke;
+    if (!strokeVal || strokeVal === 'Unknown' || strokeVal === 'Processing...') {
+      throw new Error("Analysis completed with an invalid or missing stroke classification. Please try again with a clearer cricket stroke clip.");
+    }
+
+    if (!finalData.scores || typeof finalData.scores.overall !== 'number') {
+      throw new Error("Analysis completed but performance scores are missing.");
+    }
+
+    return {
+      ...finalData,
+      analysisId: analysisId || finalData._id,
+    };
   } catch (error) {
     console.error('triggerCricketMLAnalysis error:', error);
     throw error;
@@ -136,9 +188,15 @@ export async function getAdminStatsApi() {
 }
 
 /**
- * Constructs full downloadable URL for PDF report.
+ * Constructs downloadable URL for PDF report with support for both
+ * authenticated backend proxy and direct ML service endpoint.
  */
-export function getPdfDownloadUrl(pdfFilename) {
-  if (!pdfFilename) return '#';
+export function getPdfDownloadUrl(pdfFilename, analysisId) {
+  if (!pdfFilename && !analysisId) return '#';
+  const token = localStorage.getItem('authToken');
+  if (analysisId) {
+    const query = token ? `?token=${encodeURIComponent(token)}` : '';
+    return `${API_BASE_URL}/analysis/${analysisId}/pdf${query}`;
+  }
   return `${ML_SERVICE_URL}/api/ml/pdf/${pdfFilename}`;
 }

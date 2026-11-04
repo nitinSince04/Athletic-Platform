@@ -1,6 +1,21 @@
 import numpy as np
 import os
+import threading
 from pathlib import Path
+
+_global_normalizer = None
+_global_normalizer_lock = threading.Lock()
+
+def get_normalizer(input_dir=None):
+    """Thread-safe singleton getter to reuse pre-loaded normalization parameters."""
+    global _global_normalizer
+    if _global_normalizer is None:
+        with _global_normalizer_lock:
+            if _global_normalizer is None:
+                norm = FeatureNormalizer()
+                norm.load_params(input_dir=input_dir)
+                _global_normalizer = norm
+    return _global_normalizer
 
 class FeatureNormalizer:
     """

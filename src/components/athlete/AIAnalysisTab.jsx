@@ -49,7 +49,7 @@ export default function AIAnalysisTab({ onOpenAuthModal }) {
 
   async function handleSelectSession(sessionId) {
     const selected = sessions.find((s) => s.id === sessionId || s._id === sessionId);
-    
+
     // Attempt fetching fresh full session doc from backend
     const sId = selected?._id || selected?.id || sessionId;
     let fullSession = null;
@@ -116,7 +116,7 @@ export default function AIAnalysisTab({ onOpenAuthModal }) {
       )}
 
       {/* AI Assistant Chat */}
-      <AIChatPanel />
+      <AIChatPanel analysis={activeAnalysis} />
     </div>
   );
 }

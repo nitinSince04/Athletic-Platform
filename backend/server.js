@@ -29,6 +29,7 @@ const adminRoutes = require('./routes/adminRoutes.js');
 const reportRoutes = require('./routes/reportRoutes.js');
 const coachRoutes = require('./routes/coachRoutes.js');
 const athleteRoutes = require('./routes/athleteRoutes.js');
+const chatRoutes = require('./routes/chatRoutes.js');
 const publicRoutes = require('./routes/publicRoutes.js');
 
 const app = express();
@@ -59,6 +60,7 @@ const startServer = async () => {
     app.use('/api/reports', reportRoutes);
     app.use('/api/coach', coachRoutes);
     app.use('/api/athlete', athleteRoutes);
+    app.use('/api/chat', chatRoutes);
 
 
     // Basic test route

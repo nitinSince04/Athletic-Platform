@@ -131,14 +131,16 @@ export default function CricketHome({ onOpenAuthModal, activeTabFilter = 'all' }
   useEffect(() => {
     fetchNews();
     fetchScores(true);
-    fetchOpportunities();
+  //   fetchOpportunities();
 
-    // Auto-refresh scores every 45 seconds (Requirement 8)
-    const interval = setInterval(() => {
-      fetchScores(false);
-    }, 45000);
+  //   // Auto-refresh scores every 45 seconds (Requirement 8)
+  //   const interval = setInterval(() => {
+  //     fetchScores(false);
+  //   }, 45000);
 
-    return () => clearInterval(interval);
+  //   return () => clearInterval(interval);
+  // }, []);
+      fetchOpportunities();
   }, []);
 
   // Re-fetch opportunities when filters change
@@ -415,13 +417,13 @@ export default function CricketHome({ onOpenAuthModal, activeTabFilter = 'all' }
                       <div className="cricket-score-card__team-row">
                         <span className="cricket-score-card__team-name">{match.team1.name}</span>
                         <span className="cricket-score-card__team-score mono-stat">
-                          {match.team1.score} <small>({match.team1.overs} ov)</small>
+                          {match.team1.score} {match.team1.overs && <small>({match.team1.overs} ov)</small>}
                         </span>
                       </div>
                       <div className="cricket-score-card__team-row">
                         <span className="cricket-score-card__team-name">{match.team2.name}</span>
                         <span className="cricket-score-card__team-score mono-stat">
-                          {match.team2.score} <small>({match.team2.overs} ov)</small>
+                          {match.team2.score} {match.team2.overs && <small>({match.team2.overs} ov)</small>}
                         </span>
                       </div>
                     </div>
